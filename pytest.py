@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import json
 import re
 from collections import defaultdict
+from datetime import datetime
 
 # ------------------------------
 # CONFIG
@@ -13,6 +14,24 @@ NORMAL_HEAT_GAP = 60
 TRANSITION_TIME = 180
 BLOB_BASE = "https://athleticlive.blob.core.windows.net/$web"
 # ------------------------------
+
+def get_all_meet_ids():
+    url = "https://live.athletic.net/meet-list"
+    response = requests.get(url)
+    if response.status_code != 200:
+        print("❌ Failed to fetch meet list.")
+        return []
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    meet_ids = []
+
+    for a in soup.select("a.meet-tile"):
+        href = a.get("href", "")
+        match = re.search(r"/meet/(\d+)", href)
+        if match:
+            meet_ids.append(match.group(1))
+
+    return meet_ids
 
 def parse_time(t):
     parts = t.split(":")
@@ -107,6 +126,9 @@ def main():
     total = estimate_total_time(all_event_data)
     h, m, s = int(total // 3600), int((total % 3600) // 60), int(total % 60)
     print(f"\n⏱ Estimated Total Meet Time: {h}h {m}m {s}s")
+    meet_ids = get_all_meet_ids()
+    print(f"Found: {meet_ids}")
 
 if __name__ == "__main__":
     main()
+    
