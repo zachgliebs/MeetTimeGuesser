@@ -1,70 +1,71 @@
-const fs = require('fs');
-const path = require('path');
-const { promisify } = require('util');
-const { fromPath } = require('pdf-poppler');
-const Tesseract = require('tesseract.js');
+const fs = require("fs");
+const { fromPath } = require("pdf2pic");
+const Tesseract = require("tesseract.js");
+const path = require("path");
 
-// Time config
 const RELAY_HEAT_GAP = 90;
 const NORMAL_HEAT_GAP = 60;
 const TRANSITION_TIME = 180;
 
-// Output folder for images
-const OUTPUT_DIR = './ocr_pages';
+// Create output dir
+const OUTPUT_DIR = "./output_images";
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
 
-// Convert time strings to seconds
+// Time parsers
 function parseTime(str) {
     if (!str) return 0;
-    if (str.includes(':')) {
-        const [min, sec] = str.split(':');
+    if (str.includes(":")) {
+        const [min, sec] = str.split(":");
         return parseFloat(min) * 60 + parseFloat(sec);
     }
     return parseFloat(str);
 }
 
-// Extract time-like strings from text
 function extractTimes(text) {
     const matches = [...text.matchAll(/\b\d+:\d{2}\.\d{2}\b|\b\d{1,2}\.\d{2}\b/g)];
-    return matches.map(match => parseTime(match[0]));
+    return matches.map(m => parseTime(m[0]));
 }
 
-async function runOCRonPDF(pdfPath) {
-    console.log(`📄 Converting and OCRing PDF: ${pdfPath}`);
+// Convert PDF to images
+async function convertPdfToImages(pdfPath) {
+    const convert = fromPath(pdfPath, {
+        density: 150,
+        saveFilename: "page",
+        savePath: OUTPUT_DIR,
+        format: "png",
+        width: 1200,
+        height: 1600,
+    });
 
-    const opts = {
-        format: 'jpeg',
-        out_dir: OUTPUT_DIR,
-        out_prefix: 'page',
-        page: null,
-    };
+    const pages = await convert.bulk(-1); // convert all pages
+    return pages.map(p => p.path);
+}
 
-    await fromPath(pdfPath, opts);
+// OCR one image
+async function ocrImage(imagePath) {
+    const { data: { text } } = await Tesseract.recognize(imagePath, "eng", {
+        logger: m => process.stdout.write(`\rOCR ${path.basename(imagePath)} - ${Math.round(m.progress * 100)}%`)
+    });
+    return text;
+}
 
-    const files = fs.readdirSync(OUTPUT_DIR).filter(f => f.endsWith('.jpg'));
+async function main() {
+    const pdfPath = "./Manage IESA 4A - Sectional 2 @ Wheeling HS.pdf";
+    const imagePaths = await convertPdfToImages(pdfPath);
 
-    let allText = '';
-    for (const file of files) {
-        const imagePath = path.join(OUTPUT_DIR, file);
-        const { data: { text } } = await Tesseract.recognize(imagePath, 'eng', {
-            logger: m => process.stdout.write(`\r🔍 OCR ${file} - ${m.status} ${Math.round(m.progress * 100)}%`)
-        });
-        allText += '\n' + text;
+    let allText = "";
+    for (const imagePath of imagePaths) {
+        const text = await ocrImage(imagePath);
+        allText += "\n" + text;
     }
 
-    return allText;
-}
-
-(async () => {
-    const text = await runOCRonPDF('./Manage IESA 4A - Sectional 2 @ Wheeling HS.pdf');
-    const lines = text.split('\n').map(l => l.trim());
-
+    const lines = allText.split("\n").map(l => l.trim());
     const eventMap = {};
     let currentEvent = null;
     let currentHeat = [];
 
     for (const line of lines) {
-        if (line.match(/^#\d+\s+/)) {
+        if (line.match(/^#\d+\s/)) {
             if (currentEvent && currentHeat.length > 0) {
                 eventMap[currentEvent].push([...currentHeat]);
                 currentHeat = [];
@@ -72,7 +73,7 @@ async function runOCRonPDF(pdfPath) {
             const eventName = line.replace(/^#\d+\s+/, '').replace(/Finals/i, '').trim();
             currentEvent = eventName;
             eventMap[currentEvent] = [];
-        } else if (line.toLowerCase().startsWith('heat')) {
+        } else if (line.toLowerCase().startsWith("heat")) {
             if (currentHeat.length > 0 && currentEvent) {
                 eventMap[currentEvent].push([...currentHeat]);
                 currentHeat = [];
@@ -87,10 +88,10 @@ async function runOCRonPDF(pdfPath) {
         eventMap[currentEvent].push([...currentHeat]);
     }
 
-    // Estimate time
+    // Estimate total meet time
     let totalSeconds = 0;
     for (const [event, heats] of Object.entries(eventMap)) {
-        const gap = event.toLowerCase().includes('relay') ? RELAY_HEAT_GAP : NORMAL_HEAT_GAP;
+        const gap = event.toLowerCase().includes("relay") ? RELAY_HEAT_GAP : NORMAL_HEAT_GAP;
         heats.forEach((heat, idx) => {
             const slowest = Math.max(...heat);
             totalSeconds += slowest;
@@ -103,5 +104,17 @@ async function runOCRonPDF(pdfPath) {
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = Math.floor(totalSeconds % 60);
 
+    // Output
+    console.log("\n📊 Meet Breakdown:");
+    for (const [event, heats] of Object.entries(eventMap)) {
+        console.log(`\n${event}`);
+        heats.forEach((heat, idx) => {
+            const slowest = Math.max(...heat).toFixed(2);
+            console.log(`  Heat ${idx + 1}: slowest time ${slowest}s`);
+        });
+    }
+
     console.log(`\n⏱ Estimated Total Meet Time: ${hours}h ${minutes}m ${seconds}s`);
-})();
+}
+
+main();
