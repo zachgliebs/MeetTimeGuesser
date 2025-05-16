@@ -5,15 +5,14 @@ import re
 from collections import defaultdict
 
 # ------------------------------
-# CONFIGURABLE
+# CONFIG
 MEET_ID = "53543"
 HTML_SOURCE_FILE = "events.html"
-RELAY_HEAT_GAP = 90       # seconds
-NORMAL_HEAT_GAP = 60      # seconds
-TRANSITION_TIME = 180     # seconds
-# ------------------------------
-
+RELAY_HEAT_GAP = 90
+NORMAL_HEAT_GAP = 60
+TRANSITION_TIME = 180
 BLOB_BASE = "https://athleticlive.blob.core.windows.net/$web"
+# ------------------------------
 
 def parse_time(t):
     parts = t.split(":")
@@ -26,7 +25,7 @@ def extract_events_from_html():
     events = []
     for a_tag in soup.select('a[href*="/meets/"]'):
         href = a_tag.get("href", "")
-        match = re.match(r"/meets/\d+/events/(relay|individual)/(\d+)", href)
+        match = re.match(r"/meets/\d+/events/(relay|rel|individual)/(\d+)", href)
         if not match:
             continue
 
@@ -41,19 +40,26 @@ def extract_events_from_html():
         events.append({
             "id": event_id,
             "category": category,
-            "name": full_name
+            "name": full_name,
+            "relay": category in ["relay", "rel"]
         })
 
     return events
 
-def get_heat_data(event_id, category):
-    json_url = f"{BLOB_BASE}/{'relay' if category == 'relay' else 'ind'}_heat_list/_doc/{event_id}"
+
+def get_heat_data(event_id, is_relay):
+    list_type = 'rel' if is_relay else 'ind'
+    json_url = f"{BLOB_BASE}/{list_type}_heat_list/_doc/{event_id}"
     res = requests.get(json_url)
     if res.status_code != 200:
         return {}
+
     source = res.json().get('_source', {})
     heats = defaultdict(list)
-    for entry in source.get('it', []):
+
+    entries = source.get('rtn' if is_relay else 'it', [])
+
+    for entry in entries:
         heat_num = entry.get('hn')
         time_str = entry.get('s')
         if heat_num and time_str:
@@ -61,6 +67,7 @@ def get_heat_data(event_id, category):
                 heats[heat_num].append(parse_time(time_str))
             except:
                 pass
+
     return heats
 
 def estimate_total_time(event_data):
@@ -83,8 +90,8 @@ def main():
 
     all_event_data = []
     for event in events:
-        print(f"\n📘 {event['name']} ({event['category']})")
-        heats = get_heat_data(event['id'], event['category'])
+        print(f"\n📘 {event['name']} ({'Relay' if event['relay'] else 'Individual'})")
+        heats = get_heat_data(event['id'], event['relay'])
         if not heats:
             print("  ⚠️ No heats found.")
             continue
@@ -93,7 +100,7 @@ def main():
                 print(f"  Heat {heat_num}: slowest time {max(times):.2f}s")
         all_event_data.append({
             "name": event['name'],
-            "relay": event['category'] == 'relay',
+            "relay": event['relay'],
             "heats": heats
         })
 
